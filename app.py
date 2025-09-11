@@ -4,7 +4,6 @@ import cv2
 import os
 import requests
 import numpy as np
-import io
 from typing import List
 
 app = FastAPI()
@@ -13,11 +12,17 @@ app = FastAPI()
 video_queue: List[str] = []
 
 def download_video(url, save_path):
-    resp = requests.get(url, stream=True)
-    with open(save_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            f.write(chunk)
-    return save_path
+    """Tải video từ URL và lưu vào một file tạm."""
+    try:
+        resp = requests.get(url, stream=True)
+        resp.raise_for_status()  # Kiểm tra lỗi HTTP
+        with open(save_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return save_path
+    except requests.exceptions.RequestException as e:
+        print(f"Lỗi khi tải video từ {url}: {e}")
+        return None
 
 @app.get("/")
 def root():
@@ -39,27 +44,31 @@ async def clear_queue():
 @app.post("/merge_videos/")
 async def merge_videos():
     """Ghép toàn bộ video trong queue thành 1 video mp4"""
-    global video_queue # This line was causing the error, so I've moved it here to the top of the function
+    global video_queue
     
     if not video_queue:
         return {"error": "Queue trống, không có video để ghép"}
 
     temp_files = []
 
-    # tải video
+    # Tải video từ queue
     for i, url in enumerate(video_queue):
         path = f"temp_{i}.mp4"
-        download_video(url, path)
-        temp_files.append(path)
+        downloaded_path = download_video(url, path)
+        if downloaded_path:
+            temp_files.append(downloaded_path)
 
-    # lấy thông số từ video đầu tiên
+    if not temp_files:
+        return {"error": "Không thể tải video nào để ghép"}
+
+    # Lấy thông số từ video đầu tiên
     cap0 = cv2.VideoCapture(temp_files[0])
     fps = cap0.get(cv2.CAP_PROP_FPS)
     width = int(cap0.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap0.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap0.release()
 
-    # writer
+    # Khởi tạo VideoWriter
     out_path = "merged_output.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
@@ -75,7 +84,7 @@ async def merge_videos():
 
     prev_last_frame = None
 
-    # nối video
+    # Nối video
     for idx, path in enumerate(temp_files):
         cap = cv2.VideoCapture(path)
         last_frame = None
@@ -83,12 +92,13 @@ async def merge_videos():
             ret, frame = cap.read()
             if not ret:
                 break
+            # Đảm bảo tất cả các khung hình có cùng kích thước
             frame = cv2.resize(frame, (width, height))
             last_frame = frame
             out.write(frame)
         cap.release()
 
-        # thêm crossfade với video kế tiếp
+        # Thêm crossfade với video kế tiếp
         if idx < len(temp_files) - 1 and last_frame is not None:
             next_cap = cv2.VideoCapture(temp_files[idx + 1])
             ret, next_frame = next_cap.read()
@@ -101,11 +111,11 @@ async def merge_videos():
 
     out.release()
 
-    # xóa file tạm
+    # Xóa file tạm
     for path in temp_files:
         os.remove(path)
 
-    # xóa queue sau khi merge
+    # Xóa queue sau khi merge
     video_queue = []
 
     return StreamingResponse(open(out_path, "rb"), media_type="video/mp4")
