@@ -39,6 +39,8 @@ async def clear_queue():
 @app.post("/merge_videos/")
 async def merge_videos():
     """Ghép toàn bộ video trong queue thành 1 video mp4"""
+    global video_queue # This line was causing the error, so I've moved it here to the top of the function
+    
     if not video_queue:
         return {"error": "Queue trống, không có video để ghép"}
 
@@ -104,7 +106,6 @@ async def merge_videos():
         os.remove(path)
 
     # xóa queue sau khi merge
-    global video_queue
     video_queue = []
 
     return StreamingResponse(open(out_path, "rb"), media_type="video/mp4")
