@@ -1,18 +1,17 @@
-# Sử dụng base image Python chính thức
+# Sử dụng base image Python
 FROM python:3.12-slim
 
-# Cài đặt các thư viện hệ thống cần thiết cho OpenCV
-RUN apt-get update && apt-get install -y libgl1 libglib2.0-0
+# Cài lib cần thiết cho OpenCV + ffmpeg
+RUN apt-get update && apt-get install -y libgl1 libglib2.0-0 ffmpeg
 
-# Đặt thư mục làm việc trong container
+# Đặt thư mục làm việc
 WORKDIR /app
 
-# Sao chép các tệp yêu cầu và cài đặt chúng
+# Copy requirements trước để cache install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Sao chép mã nguồn ứng dụng
+# Copy code
 COPY . .
 
-# Chỉ định lệnh để chạy ứng dụng
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway sẽ đọc Procfile, nên không cần CMD
