@@ -12,8 +12,11 @@ video_queue = []
 @app.post("/add")
 def add_video(link: str):
     global video_queue
-    video_queue.append(link)
-    return {"message": "Video link added", "queue_length": len(video_queue)}
+    # Tách theo dấu ; hoặc khoảng trắng
+    links = [l.strip() for l in link.replace("\n", " ").split(";") if l.strip()]
+    video_queue.extend(links)
+    return {"message": "Video(s) added", "queue_length": len(video_queue), "added": links}
+
 
 @app.post("/merge")
 def merge_videos():
@@ -116,3 +119,4 @@ def clear_queue():
     global video_queue
     video_queue = []
     return {"message": "Queue cleared"}
+
