@@ -49,3 +49,9 @@ def merge_videos():
     os.remove("file_list.txt")
     
     return {"message": "Merge completed", "output": output_file}
+
+@app.post("/clear")
+def clear_queue():
+    global video_queue
+    video_queue = []
+    return {"message": "Queue cleared"}
