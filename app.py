@@ -3,7 +3,7 @@ import uuid
 import cv2
 import requests
 import numpy as np
-from fastapi import FastAPI, Form, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Body
 from fastapi.responses import FileResponse
 from typing import Dict, List, Union
 
@@ -11,7 +11,6 @@ app = FastAPI()
 
 # --- Cấu trúc dữ liệu trong bộ nhớ ---
 tasks: Dict[str, Dict[str, Union[str, None]]] = {}
-video_queues: Dict[str, List[str]] = {}
 
 # --- Hàm xử lý video (Tác vụ nền) ---
 def process_video_merge(task_id: str, video_urls: List[str], width: int, height: int, fps: float):
@@ -20,6 +19,7 @@ def process_video_merge(task_id: str, video_urls: List[str], width: int, height:
     output_filename = f"{task_id}.mp4"
 
     try:
+        # tải video về tạm
         for i, url in enumerate(video_urls):
             temp_path = f"temp_{task_id}_{i}.mp4"
             resp = requests.get(url, stream=True, headers={'User-Agent': 'Mozilla/5.0'})
@@ -41,7 +41,7 @@ def process_video_merge(task_id: str, video_urls: List[str], width: int, height:
         for idx, path in enumerate(temp_files):
             cap = cv2.VideoCapture(path)
             
-            # Xử lý chuyển cảnh
+            # chuyển cảnh (fade 1s)
             if idx > 0 and last_frame_from_prev_video is not None:
                 ret, first_frame_of_current_video = cap.read()
                 if ret:
@@ -51,21 +51,19 @@ def process_video_merge(task_id: str, video_urls: List[str], width: int, height:
                         alpha = i / transition_frames
                         blended = cv2.addWeighted(last_frame_from_prev_video, 1 - alpha, first_frame_resized, alpha, 0)
                         out.write(blended)
-                # Bỏ qua frame đầu tiên đã dùng cho chuyển cảnh
             
-            # Ghi các frame còn lại
+            # ghi video chính
             current_last_frame = None
             frame_count = 0
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                # Bỏ qua frame đầu tiên của các video sau vì đã dùng cho transition
                 if idx > 0 and frame_count == 0:
+                    # bỏ frame đầu vì đã dùng cho chuyển cảnh
                     frame_count += 1
                     current_last_frame = frame
                     continue
-                
                 out.write(cv2.resize(frame, (width, height)))
                 current_last_frame = frame
                 frame_count += 1
@@ -93,32 +91,15 @@ async def startup_event():
 
 @app.get("/")
 def root():
-    return {"message": "Video Merge API with Background Tasks is running"}
-
-@app.post("/add_video/")
-async def add_video(session_id: str = Form(...), video_url: str = Form(...)):
-    if session_id not in video_queues:
-        video_queues[session_id] = []
-    video_queues[session_id].append(video_url)
-    return {"status": "added", "session_id": session_id, "queue_length": len(video_queues[session_id])}
-
-@app.post("/clear_queue/")
-async def clear_queue(session_id: str = Form(...)):
-    if session_id in video_queues:
-        video_queues[session_id] = []
-        return {"status": "cleared", "session_id": session_id}
-    return {"error": "Session not found", "session_id": session_id}
+    return {"message": "Video Merge API (direct mode) is running"}
 
 @app.post("/merge_videos/")
-async def merge_videos(session_id: str = Form(...), background_tasks: BackgroundTasks = None):
-    if session_id not in video_queues or not video_queues[session_id]:
-        return {"error": "Queue for this session is empty or does not exist."}
-
-    video_urls = video_queues[session_id][:]
-    video_queues[session_id] = [] # Xóa queue ngay
+async def merge_videos(background_tasks: BackgroundTasks, video_urls: List[str] = Body(...)):
+    if not video_urls:
+        return {"error": "No video URLs provided."}
 
     try:
-        # Tải file đầu tiên để lấy thông số
+        # Lấy specs từ video đầu tiên
         temp_probe_path = f"probe_{uuid.uuid4()}.mp4"
         resp = requests.get(video_urls[0], stream=True)
         resp.raise_for_status()
@@ -135,7 +116,8 @@ async def merge_videos(session_id: str = Form(...), background_tasks: Background
         cap.release()
         os.remove(temp_probe_path)
         
-        if fps == 0: fps = 30 # Giá trị mặc định nếu không đọc được fps
+        if fps == 0: 
+            fps = 30  # fallback mặc định
 
     except Exception as e:
         return {"error": f"Could not process first video to get specs: {e}"}
@@ -155,7 +137,7 @@ def get_status(task_id: str):
     return task
 
 @app.get("/download/{task_id}")
-def download_video(task_id: str, background_tasks: BackgroundTasks = None):
+def download_video(task_id: str, background_tasks: BackgroundTasks):
     task = tasks.get(task_id)
     if not task:
         return {"error": "Task not found"}
@@ -168,4 +150,3 @@ def download_video(task_id: str, background_tasks: BackgroundTasks = None):
     
     background_tasks.add_task(os.remove, file_path)
     return FileResponse(file_path, media_type="video/mp4", filename=f"merged_{task_id}.mp4")
-
