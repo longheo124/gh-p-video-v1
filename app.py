@@ -1,91 +1,108 @@
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-import requests
-import os
-import subprocess
-
-app = FastAPI()
-
-# Danh sách tạm giữ các video link
-video_queue = []
-
-@app.post("/add")
-def add_video(link: str):
-    global video_queue
-    # Tách chuỗi theo dấu ; và làm sạch dữ liệu
-    links = [l.strip() for l in link.replace("\n", ";").split(";") if l.strip()]
-    
-    # Thêm các link đã tách vào hàng đợi
-    video_queue.extend(links)
-    
-    return {
-        "message": "Đã thêm thành công các video vào hàng đợi.",
-        "queue_length": len(video_queue),
-        "added": links
-    }
-
-
 @app.post("/merge")
-def merge_videos():
+def merge_videos(smooth: bool = False):
     global video_queue
     if not video_queue:
         return {"error": "Không có video nào trong hàng đợi để ghép."}
-    
+
     downloaded_files = []
-    
+
+    def get_duration(file):
+        """Lấy độ dài video (giây) bằng ffprobe"""
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        try:
+            return float(result.stdout.strip())
+        except:
+            return 0.0
+
     try:
-        # 1. Tải từng link về (giữ đúng thứ tự)
+        # 1. Tải từng link về
         for i, link in enumerate(video_queue):
             filename = f"video_{i}.mp4"
             print(f"Downloading: {link} -> {filename}")
             r = requests.get(link, stream=True)
-            r.raise_for_status() # Báo lỗi nếu request không thành công (vd: 404)
+            r.raise_for_status()
             with open(filename, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
             downloaded_files.append(filename)
-        
-        # 2. Tạo file list cho ffmpeg
-        with open("file_list.txt", "w", encoding="utf-8") as f:
-            for file in downloaded_files:
-                f.write(f"file '{os.path.abspath(file)}'\n")
-        
-        # 3. Dùng ffmpeg để merge
+
         output_file = "merged_video.mp4"
-        command = [
-            "ffmpeg", 
-            "-f", "concat", 
-            "-safe", "0", 
-            "-i", "file_list.txt", 
-            "-c", "copy", 
-            output_file,
-            "-y" # Ghi đè file output nếu đã tồn tại
-        ]
+
+        if not smooth:
+            # 🔹 Chế độ ghép nhanh + loại bỏ frame lặp
+            with open("file_list.txt", "w", encoding="utf-8") as f:
+                for file in downloaded_files:
+                    f.write(f"file '{os.path.abspath(file)}'\n")
+
+            command = [
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", "file_list.txt",
+                "-vf", "mpdecimate,setpts=N/FRAME_RATE/TB",
+                "-c:a", "copy",
+                output_file,
+                "-y"
+            ]
+
+        else:
+            # 🔹 Chế độ mượt: crossfade giữa các clip
+            inputs = []
+            for file in downloaded_files:
+                inputs.extend(["-i", file])
+
+            fade_duration = 1.0  # giây crossfade
+            filter_complex = ""
+            last_video = "[0:v]"
+            last_audio = "[0:a]"
+
+            for i in range(1, len(downloaded_files)):
+                dur = get_duration(downloaded_files[i - 1])
+                offset = max(dur - fade_duration, 0)
+
+                video_tag = f"[{i}:v]"
+                audio_tag = f"[{i}:a]"
+
+                filter_complex += (
+                    f"{last_video}{last_audio}{video_tag}{audio_tag}"
+                    f"xfade=transition=fade:duration={fade_duration}:offset={offset}[v{i}][a{i}];"
+                )
+
+                last_video = f"[v{i}]"
+                last_audio = f"[a{i}]"
+
+            filter_complex = filter_complex.rstrip(";")
+
+            command = [
+                "ffmpeg",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", last_video,
+                "-map", last_audio,
+                output_file,
+                "-y"
+            ]
+
         print(f"Running command: {' '.join(command)}")
-        subprocess.run(command, check=True) # check=True sẽ báo lỗi nếu ffmpeg chạy không thành công
-        
-        # Xóa queue
+        subprocess.run(command, check=True)
+
         video_queue = []
-        
-        # Trả về file trực tiếp
         return FileResponse(output_file, media_type="video/mp4", filename=output_file)
 
     finally:
-        # 4. Luôn dọn dẹp file tạm sau khi hoàn thành hoặc có lỗi
         print("Cleaning up temporary files...")
         for file in downloaded_files:
             if os.path.exists(file):
                 os.remove(file)
         if os.path.exists("file_list.txt"):
             os.remove("file_list.txt")
-
-
-@app.post("/clear")
-def clear_queue():
-    global video_queue
-    video_queue = []
-    return {"message": "Đã xóa hàng đợi."}
-
-@app.get("/queue")
-def show_queue():
-    return {"current_queue": video_queue, "count": len(video_queue)}
