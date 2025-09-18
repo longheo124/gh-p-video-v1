@@ -1,3 +1,12 @@
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+import os
+import subprocess
+import requests
+
+app = FastAPI()
+video_queue = []  # Khai báo toàn cục
+
 @app.post("/merge")
 def merge_videos(smooth: bool = False):
     global video_queue
